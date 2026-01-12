@@ -23,13 +23,13 @@ console = Console()
 # ESPN API endpoints
 ENDPOINTS = {
     "nfl": {
-        "scoreboard": "http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
-        "summary": "http://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={}",
+        "scoreboard": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+        "summary": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={}",
         "sport_type": "football",
     },
     "ncaambb": {
-        "scoreboard": "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
-        "summary": "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event={}",
+        "scoreboard": "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+        "summary": "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event={}",
         "sport_type": "basketball",
     },
 }
@@ -46,7 +46,10 @@ def fetch_json(url: str) -> dict:
 
 
 def notify(title: str, message: str):
-    """Send macOS notification."""
+    """Send macOS notification (no-op on non-macOS)."""
+    if sys.platform != "darwin":
+        return
+
     # Escape quotes for AppleScript
     title = title.replace('"', '\\"')
     message = message.replace('"', '\\"')

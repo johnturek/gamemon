@@ -46,6 +46,22 @@ Example Usage: python3 -u ESPNNFLAPIBoxScores.py YYYYMMDD
 
 Both wrapper scripts will use `./venv/` if present, otherwise they will run with your system `python3`.
 
+### Installation (for `gamemon` / `scores`)
+
+1. Clone:
+   * `git clone https://github.com/johnturek/gamemon.git && cd gamemon`
+2. (Recommended) Create a virtualenv:
+   * `python3 -m venv venv && source venv/bin/activate`
+3. Install dependencies:
+   * `python3 -m pip install -r requirements.txt`
+4. Run:
+   * `./gamemon nfl --refresh 15`
+   * `./scores nfl 20260112`
+
+### Safety / secrets
+
+These scripts use ESPN's public endpoints and **do not require (or include) any API keys, tokens, usernames, or passwords**.
+
 Date parameter is optional to select a specific date for the games. Due to API throttling, only 1 date is accepted (script if you require more, however, some utilities accept a date range, but that use is not recommended).
 
 This project is posted under the GNU General Public License v3.0. If you intend to sell a product based on this code, or release a modified version of this code to the public, that code must also carry this license & be released to the public as open source.
