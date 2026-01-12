@@ -39,6 +39,13 @@ Use python3 -u to help reduce API caching; download .py file to your computer & 
 
 Example Usage: python3 -u ESPNNFLAPIBoxScores.py YYYYMMDD
 
+### CLI helpers
+
+* `scores <sport> [YYYYMMDD]` (sports: `nfl`, `nba`, `nhl`, `mlb`, `cfb`)
+* `gamemon <sport> [--team TEAM] [--refresh SECONDS]` (sports: `nfl`, `ncaambb`)
+
+Both wrapper scripts will use `./venv/` if present, otherwise they will run with your system `python3`.
+
 Date parameter is optional to select a specific date for the games. Due to API throttling, only 1 date is accepted (script if you require more, however, some utilities accept a date range, but that use is not recommended).
 
 This project is posted under the GNU General Public License v3.0. If you intend to sell a product based on this code, or release a modified version of this code to the public, that code must also carry this license & be released to the public as open source.

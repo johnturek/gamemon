@@ -1,0 +1,36 @@
+#!/bin/bash
+# ESPN Sports Scores CLI
+# Usage: scores <sport> [YYYYMMDD]
+# Sports: nfl, nba, nhl, mlb, cfb (college football)
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || readlink "$0" 2>/dev/null || echo "$0")")" && pwd)"
+
+if [ -f "$SCRIPT_DIR/venv/bin/activate" ]; then
+  source "$SCRIPT_DIR/venv/bin/activate"
+fi
+
+sport="${1:-nfl}"
+date="$2"
+
+case "$sport" in
+    nfl)
+        python3 -u "$SCRIPT_DIR/ESPNNFLAPIBoxScores.py" $date
+        ;;
+    nba)
+        python3 -u "$SCRIPT_DIR/ESPNNBAAPIBoxScores.py" $date
+        ;;
+    nhl)
+        python3 -u "$SCRIPT_DIR/ESPNNHLAPIBoxScores.py" $date
+        ;;
+    mlb)
+        python3 -u "$SCRIPT_DIR/ESPNMLBAPIBoxScores.py" $date
+        ;;
+    cfb)
+        python3 -u "$SCRIPT_DIR/ESPNCFBAPIBoxScores.py" $date
+        ;;
+    *)
+        echo "Usage: scores <sport> [YYYYMMDD]"
+        echo "Sports: nfl, nba, nhl, mlb, cfb"
+        exit 1
+        ;;
+esac
