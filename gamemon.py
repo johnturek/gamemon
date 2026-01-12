@@ -10,13 +10,25 @@ import subprocess
 import sys
 import time
 import urllib.request
+import threading
+import select
 from datetime import datetime
 from typing import Optional
+
+try:
+    import termios
+    import tty
+except Exception:  # pragma: no cover
+    termios = None
+    tty = None
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich import box
+from rich.live import Live
+from rich.text import Text
+from rich.layout import Layout
 
 console = Console()
 
@@ -241,8 +253,8 @@ def format_period(period: int, sport: str) -> str:
             return f"OT{period - 2}" if period > 2 else f"H{period}"
 
 
-def display_play(play: dict, sport: str):
-    """Display a single play."""
+def display_play(play: dict, sport: str) -> str:
+    """Return a formatted string for a single play."""
     period = format_period(play.get("period", 0), sport)
     clock = play.get("clock", "")
     text = play.get("text", "")
@@ -251,16 +263,109 @@ def display_play(play: dict, sport: str):
 
     if play.get("scoring"):
         if sport == "nfl":
-            console.print(f"[bold green]SCORE! {time_str}[/bold green] {text}")
-        else:
-            team = play.get("team", "")
-            console.print(f"[green]{time_str} {team}[/green] {text}")
+            return f"[bold green]SCORE! {time_str}[/bold green] {text}"
+        team = play.get("team", "")
+        return f"[green]{time_str} {team}[/green] {text}"
+
+    return f"[dim]{time_str}[/dim] {text}"
+
+
+def build_leaders_table(data: dict, game: dict) -> Table:
+    """Build a small 'player leaders' table from ESPN summary JSON."""
+    away_abbr = game.get("away_team", "")
+    home_abbr = game.get("home_team", "")
+
+    leaders_by_team = {"away": {}, "home": {}}
+
+    for team_block in data.get("leaders", []) or []:
+        team = team_block.get("team", {}) or {}
+        abbr = team.get("abbreviation", "")
+        side = "away" if abbr == away_abbr else "home" if abbr == home_abbr else None
+        if not side:
+            continue
+
+        for cat in team_block.get("leaders", []) or []:
+            cat_name = cat.get("displayName") or cat.get("name") or ""
+            entries = (cat.get("leaders") or [])
+            if not entries:
+                continue
+            top = entries[0]
+            athlete = (top.get("athlete") or {}).get("displayName", "")
+            disp = top.get("displayValue") or top.get("summary") or ""
+            leaders_by_team[side][cat_name] = f"{athlete} ({disp})" if disp else athlete
+
+    all_cats = sorted(set(leaders_by_team["away"]) | set(leaders_by_team["home"]))
+
+    table = Table(box=box.SIMPLE, show_header=True, expand=True)
+    table.add_column("Category", style="cyan", no_wrap=True)
+    table.add_column(away_abbr or "Away", style="white")
+    table.add_column(home_abbr or "Home", style="white")
+
+    if not all_cats:
+        table.add_row("-", "-", "-")
+        return table
+
+    for cat in all_cats:
+        table.add_row(
+            cat,
+            leaders_by_team["away"].get(cat, "-"),
+            leaders_by_team["home"].get(cat, "-"),
+        )
+
+    return table
+
+
+def _start_key_listener(state: dict, stop_event: threading.Event):
+    if termios is None or tty is None or not sys.stdin.isatty():
+        return None
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def run():
+        try:
+            while not stop_event.is_set():
+                r, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if not r:
+                    continue
+                ch = sys.stdin.read(1)
+                if ch in ("\t", "t", "T"):
+                    state["tab"] = "stats" if state.get("tab") == "main" else "main"
+                elif ch in ("q", "Q"):
+                    state["quit"] = True
+                    stop_event.set()
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def _build_layout(tab: str, header_panel: Panel, plays_panel: Panel, leaders_panel: Panel) -> Layout:
+    layout = Layout()
+    layout.split_column(
+        Layout(header_panel, name="header", size=3),
+        Layout(name="body"),
+    )
+
+    if tab == "stats":
+        layout["body"].split_row(
+            Layout(leaders_panel, name="leaders", ratio=1),
+            Layout(plays_panel, name="plays", ratio=2),
+        )
     else:
-        console.print(f"[dim]{time_str}[/dim] {text}")
+        layout["body"].update(plays_panel)
+
+    return layout
 
 
-def display_header(game: dict, scores: tuple, situation: dict, sport: str):
-    """Display current game status header."""
+def display_header(game: dict, scores: tuple, situation: dict, sport: str) -> Panel:
+    """Build current game status header."""
     away_score, home_score = scores
 
     # Build situation text
@@ -275,7 +380,7 @@ def display_header(game: dict, scores: tuple, situation: dict, sport: str):
 
     header = f"  {game['away_team']} [bold]{away_score}[/bold] - [bold]{home_score}[/bold] {game['home_team']}    {game['detail']}{sit_text}  "
 
-    console.print(Panel(header, box=box.DOUBLE, style="cyan"))
+    return Panel(header, box=box.DOUBLE, style="cyan")
 
 
 def monitor_game(game: dict, sport: str, refresh: int):
@@ -285,104 +390,138 @@ def monitor_game(game: dict, sport: str, refresh: int):
 
     last_play_ids = set()
     last_scores = (0, 0)
-    first_run = True
+    initialized = False
+    play_log: list[str] = []
 
-    console.print(f"\n[bold cyan]Monitoring: {game['away_name']} @ {game['home_name']}[/bold cyan]")
-    console.print(f"[dim]Refreshing every {refresh} seconds. Press Ctrl+C to quit.[/dim]\n")
+    state = {"tab": "main", "quit": False}
+    stop_event = threading.Event()
+    key_thread = _start_key_listener(state, stop_event)
 
     try:
-        while True:
-            data = fetch_json(endpoint)
+        with Live(screen=True, auto_refresh=False, console=console) as live:
+            while True:
+                data = fetch_json(endpoint)
 
-            if not data:
-                time.sleep(refresh)
-                continue
+                if not data:
+                    time.sleep(refresh)
+                    continue
 
-            # Check game state
-            header = data.get("header", {})
-            competitions = header.get("competitions", [{}])
-            if competitions:
-                status = competitions[0].get("status", {})
-                game["state"] = status.get("type", {}).get("state", game["state"])
-                game["detail"] = status.get("type", {}).get("detail", game["detail"])
+                # Check game state
+                header = data.get("header", {})
+                competitions = header.get("competitions", [{}])
+                if competitions:
+                    status = competitions[0].get("status", {})
+                    game["state"] = status.get("type", {}).get("state", game["state"])
+                    game["detail"] = status.get("type", {}).get("detail", game["detail"])
 
-            # Get current scores
-            scores = get_scores(data, sport)
+                # Get current scores
+                scores = get_scores(data, sport)
 
-            # Get situation for NFL
-            situation = {}
-            if sport == "nfl":
-                situation = data.get("situation", {})
-                if not situation:
-                    drives = data.get("drives", {})
-                    current = drives.get("current", {})
-                    if current:
-                        plays = current.get("plays", [])
-                        if plays:
-                            last_play = plays[-1]
-                            situation = {
-                                "downDistanceText": last_play.get("end", {}).get("downDistanceText", ""),
-                                "possession": last_play.get("end", {}).get("team", {}).get("abbreviation", ""),
-                            }
+                # Get situation for NFL
+                situation = {}
+                if sport == "nfl":
+                    situation = data.get("situation", {})
+                    if not situation:
+                        drives = data.get("drives", {})
+                        current = drives.get("current", {})
+                        if current:
+                            plays = current.get("plays", [])
+                            if plays:
+                                last_play = plays[-1]
+                                situation = {
+                                    "downDistanceText": last_play.get("end", {}).get("downDistanceText", ""),
+                                    "possession": last_play.get("end", {}).get("team", {}).get("abbreviation", ""),
+                                }
 
-            # Display header
-            console.clear()
-            display_header(game, scores, situation, sport)
-            console.print()
+                # Get new plays
+                if sport == "nfl":
+                    new_plays = get_plays_nfl(data, last_play_ids)
+                else:
+                    new_plays = get_plays_basketball(data, last_play_ids)
 
-            # Get new plays
-            if sport == "nfl":
-                new_plays = get_plays_nfl(data, last_play_ids)
-            else:
-                new_plays = get_plays_basketball(data, last_play_ids)
+                if not initialized:
+                    play_log.append(f"[bold cyan]Monitoring:[/bold cyan] {game['away_name']} @ {game['home_name']}")
+                    play_log.append(f"[dim]Refreshing every {refresh} seconds. Press Ctrl+C to quit.[/dim]")
+                    play_log.append("")
 
-            # On first run, just show recent plays without notification
-            if first_run:
-                # Show last 10 plays on startup
-                for play in new_plays[-10:]:
-                    display_play(play, sport)
-                first_run = False
-            else:
-                # Display new plays
-                for play in new_plays:
-                    display_play(play, sport)
+                    for play in new_plays[-10:]:
+                        play_log.append(display_play(play, sport))
 
-                    # Notify on scoring plays
-                    if play.get("scoring"):
-                        notify(
-                            f"{game['away_team']} vs {game['home_team']}",
-                            f"SCORE! {scores[0]} - {scores[1]}"
-                        )
+                    initialized = True
+                    last_scores = scores
+                else:
+                    for play in new_plays:
+                        play_log.append(display_play(play, sport))
 
-            # Check for score changes (after first run)
-            if not first_run and scores != last_scores:
-                if scores[0] > last_scores[0]:
-                    notify(
-                        f"{game['away_team']} Scores!",
-                        f"{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
-                    )
-                elif scores[1] > last_scores[1]:
-                    notify(
-                        f"{game['home_team']} Scores!",
-                        f"{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
-                    )
+                        # Notify on scoring plays
+                        if play.get("scoring"):
+                            notify(
+                                f"{game['away_team']} vs {game['home_team']}",
+                                f"SCORE! {scores[0]} - {scores[1]}"
+                            )
 
-            last_scores = scores
+                    # Check for score changes
+                    if scores != last_scores:
+                        if scores[0] > last_scores[0]:
+                            notify(
+                                f"{game['away_team']} Scores!",
+                                f"{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
+                            )
+                        elif scores[1] > last_scores[1]:
+                            notify(
+                                f"{game['home_team']} Scores!",
+                                f"{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
+                            )
 
-            # Check if game ended
-            if game["state"] == "post":
-                console.print("\n[bold yellow]FINAL[/bold yellow]")
-                console.print(f"[bold]{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}[/bold]")
-                notify(
-                    "Game Over",
-                    f"Final: {game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
+                    last_scores = scores
+
+                # Trim play log to fit screen
+                max_lines = max(10, console.size.height - (6 if state.get("tab") == "stats" else 5))
+                if len(play_log) > max_lines:
+                    play_log = play_log[-max_lines:]
+
+                header_panel = display_header(game, scores, situation, sport)
+                leaders_panel = Panel(build_leaders_table(data, game), title="Player Leaders", box=box.ROUNDED)
+                plays_text = Text.from_markup("\n".join(play_log)) if play_log else Text("Waiting for plays...", style="dim")
+                plays_panel = Panel(
+                    plays_text,
+                    title="Play by Play",
+                    subtitle="Tab/T: stats  |  Q: quit  |  Ctrl+C: quit",
+                    box=box.ROUNDED,
                 )
-                break
 
-            time.sleep(refresh)
+                layout = _build_layout(state.get("tab", "main"), header_panel, plays_panel, leaders_panel)
+                live.update(layout, refresh=True)
+
+                if state.get("quit"):
+                    break
+
+                # Check if game ended
+                if game["state"] == "post":
+                    play_log.append("")
+                    play_log.append("[bold yellow]FINAL[/bold yellow]")
+                    play_log.append(f"[bold]{game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}[/bold]")
+                    notify(
+                        "Game Over",
+                        f"Final: {game['away_team']} {scores[0]} - {scores[1]} {game['home_team']}"
+                    )
+
+                    plays_text = Text.from_markup("\n".join(play_log[-max_lines:]))
+                    plays_panel = Panel(plays_text, title="Play by Play", box=box.ROUNDED)
+                    leaders_panel = Panel(build_leaders_table(data, game), title="Player Leaders", box=box.ROUNDED)
+
+                    layout = _build_layout(state.get("tab", "main"), header_panel, plays_panel, leaders_panel)
+                    live.update(layout, refresh=True)
+                    break
+
+                time.sleep(refresh)
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped monitoring.[/yellow]")
+    finally:
+        stop_event.set()
+        if key_thread:
+            key_thread.join(timeout=0.2)
 
 
 def main():
