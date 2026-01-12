@@ -44,6 +44,13 @@ Example Usage: python3 -u ESPNNFLAPIBoxScores.py YYYYMMDD
 * `scores <sport> [YYYYMMDD]` (sports: `nfl`, `nba`, `nhl`, `mlb`, `cfb`)
 * `gamemon <sport> [--team TEAM] [--refresh SECONDS]` (sports: `nfl`, `ncaambb`)
 
+`gamemon` now runs a **Textual** TUI (scrollable play-by-play, search/filter, stats tab).
+
+Keys: `Q` quit • `Space` pause • `F` follow newest • `/` search • `A` all • `S` scores • `P` penalties • `V` turnovers • `Tab/T` toggle stats.
+
+Optional config (JSON) is loaded from `./gamemon_config.json` or `~/.config/gamemon/config.json`.
+Supported keys include: `theme` (`dark`/`light`), `favorites` (team abbrevs), `emoji_overrides` (substring→emoji), `max_plays`, `max_scrollback`, `tui_game_picker`.
+
 Both wrapper scripts will use `./venv/` if present, otherwise they will run with your system `python3`.
 
 ### Installation (for `gamemon` / `scores`)
